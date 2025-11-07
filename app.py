@@ -2,6 +2,8 @@
 # MedSync Backend (Flask)
 # Fully working backend for signup, login, dashboards, upload
 # ===========================================================
+from flask_cors import CORS
+CORS(app, supports_credentials=True)
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
