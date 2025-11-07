@@ -41,7 +41,7 @@ def check_token(req):
     try:
         decoded = jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])
         return decoded
-    except:
+    except Exception:
         return None
 
 
@@ -77,14 +77,21 @@ def setup_db():
     conn.commit()
     conn.close()
 
+# ✅ Create tables on import (gunicorn on Render won’t hit __main__)
+setup_db()
+
 
 # ===========================================================
 # ✅ API ROUTES
 # ===========================================================
 
 # -----------------------------
-# ✅ HEALTH CHECK
+# ✅ Root / Health Check
 # -----------------------------
+@app.route("/")
+def root():
+    return jsonify({"service": "MedSync backend", "ok": True})
+
 @app.route("/api/health")
 def health():
     return jsonify({"status": "ok"})
@@ -95,15 +102,19 @@ def health():
 # -----------------------------
 @app.route("/api/signup", methods=["POST"])
 def signup():
-    data = request.json
+    data = request.json or {}
     username = data.get("username")
     email = data.get("email")
-    password = data.get("password").encode()
+    pwd = data.get("password") or ""
     role = data.get("role")
+
+    if not username or not email or not pwd:
+        return jsonify({"error": "Missing fields"}), 400
 
     if role not in ["patient", "hospital"]:
         return jsonify({"error": "Invalid role"}), 400
 
+    password = pwd.encode()
     hashed = bcrypt.hashpw(password, bcrypt.gensalt())
 
     # CID example: CID-ABCD1234
@@ -122,22 +133,30 @@ def signup():
     except sqlite3.IntegrityError:
         return jsonify({"error": "Email already exists"}), 400
 
+# ✅ Alias to match frontend (/api/auth/signup)
+@app.route("/api/auth/signup", methods=["POST"])
+def signup_alias():
+    return signup()
+
 
 # -----------------------------
 # ✅ LOGIN
 # -----------------------------
 @app.route("/api/login", methods=["POST"])
 def login():
-    data = request.json
+    data = request.json or {}
     email = data.get("email")
-    password = data.get("password").encode()
+    pwd = data.get("password") or ""
+
+    if not email or not pwd:
+        return jsonify({"error": "Missing email or password"}), 400
 
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT * FROM users WHERE email=?", (email,))
     user = c.fetchone()
 
-    if not user or not bcrypt.checkpw(password, user["password"]):
+    if not user or not bcrypt.checkpw(pwd.encode(), user["password"]):
         return jsonify({"error": "Invalid credentials"}), 400
 
     token = jwt.encode({
@@ -154,6 +173,11 @@ def login():
         "username": user["username"],
         "cid": user["cid"]
     })
+
+# ✅ Alias to match frontend (/api/auth/login)
+@app.route("/api/auth/login", methods=["POST"])
+def login_alias():
+    return login()
 
 
 # ===========================================================
@@ -191,6 +215,9 @@ def find_patient():
         return jsonify({"error": "Unauthorized"}), 401
 
     cid = request.args.get("cid")
+    if not cid:
+        return jsonify({"error": "Missing CID"}), 400
+
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT id, username, cid FROM users WHERE cid=?", (cid,))
@@ -214,6 +241,8 @@ def upload_report():
 
     f = request.files["report_file"]
     patient_id = request.form.get("patient_id")
+    if not patient_id:
+        return jsonify({"error": "Missing patient_id"}), 400
 
     filename = f"{datetime.datetime.utcnow().timestamp()}_{f.filename}"
     filepath = os.path.join(UPLOAD_FOLDER, filename)
@@ -261,8 +290,7 @@ def download(filename):
 
 
 # ===========================================================
-# ✅ START SERVER
+# ✅ START SERVER (local dev only)
 # ===========================================================
 if __name__ == "__main__":
-    setup_db()
     app.run(host="0.0.0.0", port=5000, debug=True)
