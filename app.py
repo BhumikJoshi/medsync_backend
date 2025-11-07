@@ -1,9 +1,6 @@
 # ===========================================================
-# MedSync Backend (Flask)
-# Fully working backend for signup, login, dashboards, upload
+# MedSync Backend - FIXED FOR RENDER
 # ===========================================================
-from flask_cors import CORS
-CORS(app, supports_credentials=True)
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -14,42 +11,25 @@ import jwt
 import datetime
 
 # -----------------------------
-# App Config
+# App Setup
 # -----------------------------
 app = Flask(__name__)
-CORS(app)                        # ✅ Allows frontend → backend calls
+CORS(app, supports_credentials=True)
+
 app.config["SECRET_KEY"] = "medsyncsecret"
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+
 # -----------------------------
-# Helper: DB Connection
+# DB Helpers
 # -----------------------------
 def get_db():
-    conn = sqlite3.connect("medsync.db")
+    conn = sqlite3.connect("medsync.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-# -----------------------------
-# Helper: Token Check
-# -----------------------------
-def check_token(req):
-    auth = req.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return None
-
-    token = auth.split(" ")[1]
-    try:
-        decoded = jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])
-        return decoded
-    except Exception:
-        return None
-
-
-# -----------------------------
-# Initialize DB Tables
-# -----------------------------
 def setup_db():
     conn = get_db()
     c = conn.cursor()
@@ -79,20 +59,25 @@ def setup_db():
     conn.commit()
     conn.close()
 
-# ✅ Create tables on import (gunicorn on Render won’t hit __main__)
-setup_db()
+
+# -----------------------------
+# Token Check
+# -----------------------------
+def check_token(req):
+    auth = req.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+
+    token = auth.split(" ")[1]
+    try:
+        return jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])
+    except:
+        return None
 
 
 # ===========================================================
-# ✅ API ROUTES
+# API ROUTES
 # ===========================================================
-
-# -----------------------------
-# ✅ Root / Health Check
-# -----------------------------
-@app.route("/")
-def root():
-    return jsonify({"service": "MedSync backend", "ok": True})
 
 @app.route("/api/health")
 def health():
@@ -100,65 +85,53 @@ def health():
 
 
 # -----------------------------
-# ✅ SIGNUP
+# Signup
 # -----------------------------
 @app.route("/api/signup", methods=["POST"])
 def signup():
-    data = request.json or {}
+    data = request.json
     username = data.get("username")
     email = data.get("email")
-    pwd = data.get("password") or ""
+    password = data.get("password").encode()
     role = data.get("role")
-
-    if not username or not email or not pwd:
-        return jsonify({"error": "Missing fields"}), 400
 
     if role not in ["patient", "hospital"]:
         return jsonify({"error": "Invalid role"}), 400
 
-    password = pwd.encode()
     hashed = bcrypt.hashpw(password, bcrypt.gensalt())
 
-    # CID example: CID-ABCD1234
     import random, string
     cid = "CID-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
     try:
         conn = get_db()
         c = conn.cursor()
-        c.execute(
-            "INSERT INTO users (username, email, password, role, cid) VALUES (?, ?, ?, ?, ?)",
-            (username, email, hashed, role, cid)
-        )
+        c.execute("""
+            INSERT INTO users (username, email, password, role, cid)
+            VALUES (?, ?, ?, ?, ?)
+        """, (username, email, hashed, role, cid))
         conn.commit()
         return jsonify({"message": "Account created", "cid": cid})
+
     except sqlite3.IntegrityError:
         return jsonify({"error": "Email already exists"}), 400
 
-# ✅ Alias to match frontend (/api/auth/signup)
-@app.route("/api/auth/signup", methods=["POST"])
-def signup_alias():
-    return signup()
-
 
 # -----------------------------
-# ✅ LOGIN
+# Login
 # -----------------------------
 @app.route("/api/login", methods=["POST"])
 def login():
-    data = request.json or {}
+    data = request.json
     email = data.get("email")
-    pwd = data.get("password") or ""
-
-    if not email or not pwd:
-        return jsonify({"error": "Missing email or password"}), 400
+    password = data.get("password").encode()
 
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT * FROM users WHERE email=?", (email,))
     user = c.fetchone()
 
-    if not user or not bcrypt.checkpw(pwd.encode(), user["password"]):
+    if not user or not bcrypt.checkpw(password, user["password"]):
         return jsonify({"error": "Invalid credentials"}), 400
 
     token = jwt.encode({
@@ -176,14 +149,9 @@ def login():
         "cid": user["cid"]
     })
 
-# ✅ Alias to match frontend (/api/auth/login)
-@app.route("/api/auth/login", methods=["POST"])
-def login_alias():
-    return login()
-
 
 # ===========================================================
-# ✅ PATIENT ROUTES
+# PATIENT ROUTES
 # ===========================================================
 @app.route("/api/patient/reports")
 def patient_reports():
@@ -200,16 +168,13 @@ def patient_reports():
         WHERE patient_id=?
         ORDER BY uploaded_at DESC
     """, (user["id"],))
-
     data = [dict(row) for row in c.fetchall()]
     return jsonify(data)
 
 
 # ===========================================================
-# ✅ HOSPITAL ROUTES
+# HOSPITAL ROUTES
 # ===========================================================
-
-# FIND PATIENT BY CID
 @app.route("/api/hospital/find_patient")
 def find_patient():
     user = check_token(request)
@@ -217,8 +182,6 @@ def find_patient():
         return jsonify({"error": "Unauthorized"}), 401
 
     cid = request.args.get("cid")
-    if not cid:
-        return jsonify({"error": "Missing CID"}), 400
 
     conn = get_db()
     c = conn.cursor()
@@ -231,7 +194,6 @@ def find_patient():
     return jsonify(dict(patient))
 
 
-# UPLOAD REPORT
 @app.route("/api/hospital/upload", methods=["POST"])
 def upload_report():
     user = check_token(request)
@@ -243,8 +205,6 @@ def upload_report():
 
     f = request.files["report_file"]
     patient_id = request.form.get("patient_id")
-    if not patient_id:
-        return jsonify({"error": "Missing patient_id"}), 400
 
     filename = f"{datetime.datetime.utcnow().timestamp()}_{f.filename}"
     filepath = os.path.join(UPLOAD_FOLDER, filename)
@@ -255,14 +215,13 @@ def upload_report():
     c.execute("""
         INSERT INTO reports (filename, original_name, patient_id, hospital_id, uploaded_at)
         VALUES (?, ?, ?, ?, ?)
-    """, (filename, f.filename, patient_id, user["id"], datetime.datetime.utcnow().isoformat()))
-
+    """, (filename, f.filename, patient_id, user["id"],
+          datetime.datetime.utcnow().isoformat()))
     conn.commit()
 
     return jsonify({"message": "Uploaded"})
 
 
-# HOSPITAL VIEW OWN UPLOADS
 @app.route("/api/hospital/reports")
 def hospital_reports():
     user = check_token(request)
@@ -284,7 +243,7 @@ def hospital_reports():
 
 
 # ===========================================================
-# ✅ DOWNLOAD REPORT
+# FILE DOWNLOAD
 # ===========================================================
 @app.route("/download/<filename>")
 def download(filename):
@@ -292,7 +251,7 @@ def download(filename):
 
 
 # ===========================================================
-# ✅ START SERVER (local dev only)
+# STARTUP
 # ===========================================================
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+setup_db()     # ✅ always run on Render
+print("✅ Database ready")
